@@ -1,6 +1,5 @@
 const express = require("express");
 const { google } = require("googleapis");
-const open = require("open");
 const bodyParser = require("body-parser");
 require("dotenv").config();
 
@@ -101,7 +100,9 @@ app.post("/send", async (req, res) => {
   }
 });
 
+const { exec } = require("child_process");
+
 app.listen(port, () => {
   console.log(`🚀 서버 실행 중: http://localhost:${port}`);
-  open(`http://localhost:${port}`);
+  exec(`start http://localhost:${port}`); // 윈도우 기준 브라우저 열기
 });

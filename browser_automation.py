@@ -1,29 +1,34 @@
 """
 브라우저 자동화 모듈
-Playwright를 사용하여 rollbet.gg 로그인을 자동화합니다.
+undetected-chromedriver를 사용하여 rollbet.gg 로그인을 자동화합니다.
 """
 import time
-from playwright.sync_api import Page, Browser, BrowserContext
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from typing import Optional, Dict
 from captcha_solver import CaptchaSolver
 
 
 class BrowserAutomation:
-    def __init__(self, page: Page, captcha_solver: Optional[CaptchaSolver] = None):
+    def __init__(self, driver, captcha_solver: Optional[CaptchaSolver] = None):
         """
         Args:
-            page: Playwright Page 객체
+            driver: undetected-chromedriver WebDriver 객체
             captcha_solver: CaptchaSolver 인스턴스 (선택적)
         """
-        self.page = page
+        self.driver = driver
         self.captcha_solver = captcha_solver
+        self.wait = WebDriverWait(driver, 30)
     
-    def login(self, email: str, password: str, login_url: str = "https://rollbet.gg/login") -> bool:
+    def login(self, username: str, password: str, login_url: str = "https://rollbet.gg/login") -> bool:
         """
         rollbet.gg에 로그인합니다.
         
         Args:
-            email: 이메일 주소
+            username: 사용자명 또는 이메일 주소
             password: 비밀번호
             login_url: 로그인 페이지 URL
         
@@ -31,40 +36,48 @@ class BrowserAutomation:
             로그인 성공 여부
         """
         try:
-            print(f"로그인 페이지 접속 중: {email}")
-            self.page.goto(login_url, wait_until="networkidle", timeout=30000)
-            time.sleep(2)  # 페이지 로딩 대기
+            print(f"로그인 페이지 접속 중: {username}")
+            self.driver.get(login_url)
+            time.sleep(3)  # 페이지 로딩 대기
             
-            # Email 입력 필드 찾기 및 입력
-            # 여러 가능한 셀렉터 시도
+            # Email/Username 입력 필드 찾기 및 입력
             email_selectors = [
                 'input[type="email"]',
                 'input[name="email"]',
+                'input[name="username"]',
+                'input[name="user"]',
                 'input[placeholder*="Email" i]',
+                'input[placeholder*="Username" i]',
                 'input[id*="email" i]',
-                'input[type="text"]'  # fallback
+                'input[id*="username" i]',
+                'input[type="text"]'
             ]
             
             email_input = None
             for selector in email_selectors:
                 try:
-                    email_input = self.page.wait_for_selector(selector, timeout=5000)
-                    if email_input:
+                    email_input = self.wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    if email_input and email_input.is_displayed():
                         break
-                except:
+                except TimeoutException:
                     continue
             
             if not email_input:
-                print("Email 입력 필드를 찾을 수 없습니다.")
+                print("Email/Username 입력 필드를 찾을 수 없습니다.")
                 return False
             
-            email_input.fill(email)
-            time.sleep(0.5)
+            # 기존 값 지우고 입력
+            email_input.clear()
+            email_input.send_keys(username)
+            time.sleep(1)
             
             # Password 입력 필드 찾기 및 입력
             password_selectors = [
                 'input[type="password"]',
                 'input[name="password"]',
+                'input[name="pass"]',
                 'input[placeholder*="Password" i]',
                 'input[id*="password" i]'
             ]
@@ -72,18 +85,19 @@ class BrowserAutomation:
             password_input = None
             for selector in password_selectors:
                 try:
-                    password_input = self.page.wait_for_selector(selector, timeout=5000)
-                    if password_input:
+                    password_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if password_input and password_input.is_displayed():
                         break
-                except:
+                except NoSuchElementException:
                     continue
             
             if not password_input:
                 print("Password 입력 필드를 찾을 수 없습니다.")
                 return False
             
-            password_input.fill(password)
-            time.sleep(0.5)
+            password_input.clear()
+            password_input.send_keys(password)
+            time.sleep(1)
             
             # hCaptcha 처리
             if self.captcha_solver:
@@ -94,21 +108,30 @@ class BrowserAutomation:
             # Login 버튼 찾기 및 클릭
             login_button_selectors = [
                 'button[type="submit"]',
-                'button:has-text("Login")',
-                'button:has-text("Log in")',
-                'button:has-text("로그인")',
+                'button:contains("Login")',
+                'button:contains("Log in")',
+                'button:contains("로그인")',
                 'input[type="submit"]',
                 'button.btn-primary',
-                'button.login-button'
+                'button.login-button',
+                'button[class*="login"]',
+                'button[class*="submit"]'
             ]
             
             login_button = None
             for selector in login_button_selectors:
                 try:
-                    login_button = self.page.wait_for_selector(selector, timeout=5000)
-                    if login_button:
+                    if ':contains(' in selector:
+                        # contains는 XPath로 변환
+                        text = selector.split('"')[1]
+                        xpath = f"//button[contains(text(), '{text}')]"
+                        login_button = self.driver.find_element(By.XPATH, xpath)
+                    else:
+                        login_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    
+                    if login_button and login_button.is_displayed():
                         break
-                except:
+                except (NoSuchElementException, TimeoutException):
                     continue
             
             if not login_button:
@@ -116,26 +139,29 @@ class BrowserAutomation:
                 return False
             
             login_button.click()
-            time.sleep(3)  # 로그인 처리 대기
+            time.sleep(5)  # 로그인 처리 대기
             
             # 로그인 성공 확인
-            # URL 변경 또는 특정 요소가 나타나는지 확인
-            current_url = self.page.url
+            current_url = self.driver.current_url
             if "login" not in current_url.lower() or self._check_login_success():
-                print(f"로그인 성공: {email}")
+                print(f"로그인 성공: {username}")
                 return True
             else:
-                print(f"로그인 실패: {email}")
+                print(f"로그인 실패: {username}")
                 return False
         
         except Exception as e:
             print(f"로그인 중 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _solve_captcha(self) -> bool:
         """hCaptcha를 해결합니다."""
         try:
             # hCaptcha iframe 찾기
+            time.sleep(2)  # 페이지 로딩 대기
+            
             captcha_selectors = [
                 'iframe[src*="hcaptcha"]',
                 'iframe[title*="hcaptcha" i]',
@@ -146,10 +172,10 @@ class BrowserAutomation:
             captcha_iframe = None
             for selector in captcha_selectors:
                 try:
-                    captcha_iframe = self.page.wait_for_selector(selector, timeout=5000)
+                    captcha_iframe = self.driver.find_element(By.CSS_SELECTOR, selector)
                     if captcha_iframe:
                         break
-                except:
+                except NoSuchElementException:
                     continue
             
             if not captcha_iframe:
@@ -157,28 +183,25 @@ class BrowserAutomation:
                 return True  # CAPTCHA가 없으면 성공으로 간주
             
             # hCaptcha 사이트 키 추출
-            site_key = self.page.evaluate("""
-                () => {
-                    const iframe = document.querySelector('iframe[src*="hcaptcha"]');
-                    if (iframe) {
-                        const src = iframe.src;
-                        const match = src.match(/sitekey=([^&]+)/);
-                        return match ? match[1] : null;
-                    }
-                    // 또는 data-sitekey 속성 확인
-                    const widget = document.querySelector('[data-sitekey]');
-                    if (widget) {
-                        return widget.getAttribute('data-sitekey');
-                    }
-                    return null;
+            site_key = self.driver.execute_script("""
+                const iframe = document.querySelector('iframe[src*="hcaptcha"]');
+                if (iframe) {
+                    const src = iframe.src;
+                    const match = src.match(/sitekey=([^&]+)/);
+                    if (match) return match[1];
                 }
+                const widget = document.querySelector('[data-sitekey]');
+                if (widget) {
+                    return widget.getAttribute('data-sitekey');
+                }
+                return null;
             """)
             
             if not site_key:
                 # 페이지 소스에서 직접 찾기
-                page_content = self.page.content()
+                page_source = self.driver.page_source
                 import re
-                match = re.search(r'data-sitekey=["\']([^"\']+)["\']', page_content)
+                match = re.search(r'data-sitekey=["\']([^"\']+)["\']', page_source)
                 if match:
                     site_key = match.group(1)
                 else:
@@ -188,41 +211,45 @@ class BrowserAutomation:
             print(f"hCaptcha 사이트 키 발견: {site_key[:20]}...")
             
             # 2captcha로 해결
-            page_url = self.page.url
+            page_url = self.driver.current_url
             token = self.captcha_solver.solve_hcaptcha(site_key, page_url)
             
             if not token:
                 return False
             
             # 토큰을 페이지에 주입
-            self.page.evaluate(f"""
-                () => {{
-                    // hCaptcha 콜백 함수 호출
-                    if (window.hcaptcha) {{
-                        const widgetId = window.hcaptcha.render(document.querySelector('.h-captcha') || document.body);
-                        window.hcaptcha.execute(widgetId, {{token: '{token}'}});
-                    }}
-                    // 또는 직접 토큰 설정
-                    const textarea = document.querySelector('textarea[name="h-captcha-response"]');
-                    if (textarea) {{
-                        textarea.value = '{token}';
-                        textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    }}
-                    // g-recaptcha-response도 확인
-                    const gTextarea = document.querySelector('textarea[name="g-recaptcha-response"]');
-                    if (gTextarea) {{
-                        gTextarea.value = '{token}';
-                        gTextarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    }}
+            self.driver.execute_script(f"""
+                // hCaptcha 콜백 함수 호출
+                if (window.hcaptcha) {{
+                    const widgetId = window.hcaptcha.render(
+                        document.querySelector('.h-captcha') || document.body
+                    );
+                    window.hcaptcha.execute(widgetId, {{token: '{token}'}});
+                }}
+                // 직접 토큰 설정
+                const textarea = document.querySelector('textarea[name="h-captcha-response"]');
+                if (textarea) {{
+                    textarea.value = '{token}';
+                    textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+                // g-recaptcha-response도 확인
+                const gTextarea = document.querySelector('textarea[name="g-recaptcha-response"]');
+                if (gTextarea) {{
+                    gTextarea.value = '{token}';
+                    gTextarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    gTextarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 }}
             """)
             
-            time.sleep(2)  # 토큰 적용 대기
+            time.sleep(3)  # 토큰 적용 대기
             print("hCaptcha 토큰 주입 완료")
             return True
         
         except Exception as e:
             print(f"hCaptcha 해결 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _check_login_success(self) -> bool:
@@ -230,25 +257,25 @@ class BrowserAutomation:
         try:
             # 로그인 성공 표시 요소 확인
             success_indicators = [
-                'a[href*="logout"]',
-                'button:has-text("Logout")',
-                'button:has-text("Log out")',
-                '.user-menu',
-                '.account-menu',
-                '[data-testid="user-menu"]'
+                (By.CSS_SELECTOR, 'a[href*="logout"]'),
+                (By.XPATH, '//button[contains(text(), "Logout")]'),
+                (By.XPATH, '//button[contains(text(), "Log out")]'),
+                (By.CSS_SELECTOR, '.user-menu'),
+                (By.CSS_SELECTOR, '.account-menu'),
+                (By.CSS_SELECTOR, '[data-testid="user-menu"]')
             ]
             
-            for selector in success_indicators:
+            for by, selector in success_indicators:
                 try:
-                    element = self.page.wait_for_selector(selector, timeout=3000)
+                    element = self.driver.find_element(by, selector)
                     if element:
                         return True
-                except:
+                except NoSuchElementException:
                     continue
             
             # URL 기반 확인
-            current_url = self.page.url
-            if "dashboard" in current_url.lower() or "account" in current_url.lower():
+            current_url = self.driver.current_url.lower()
+            if "dashboard" in current_url or "account" in current_url or "profile" in current_url:
                 return True
             
             return False
@@ -260,26 +287,26 @@ class BrowserAutomation:
         """로그아웃합니다."""
         try:
             logout_selectors = [
-                'a[href*="logout"]',
-                'button:has-text("Logout")',
-                'button:has-text("Log out")',
-                '.logout-button'
+                (By.CSS_SELECTOR, 'a[href*="logout"]'),
+                (By.XPATH, '//button[contains(text(), "Logout")]'),
+                (By.XPATH, '//button[contains(text(), "Log out")]'),
+                (By.CSS_SELECTOR, '.logout-button')
             ]
             
-            for selector in logout_selectors:
+            for by, selector in logout_selectors:
                 try:
-                    logout_button = self.page.wait_for_selector(selector, timeout=5000)
-                    if logout_button:
+                    logout_button = self.driver.find_element(by, selector)
+                    if logout_button and logout_button.is_displayed():
                         logout_button.click()
                         time.sleep(2)
                         print("로그아웃 완료")
                         return True
-                except:
+                except (NoSuchElementException, TimeoutException):
                     continue
             
             # URL로 직접 로그아웃 시도
             try:
-                self.page.goto("https://rollbet.gg/logout", timeout=10000)
+                self.driver.get("https://rollbet.gg/logout")
                 time.sleep(2)
                 print("로그아웃 완료 (URL 직접 접근)")
                 return True
@@ -292,4 +319,3 @@ class BrowserAutomation:
         except Exception as e:
             print(f"로그아웃 중 오류: {e}")
             return False
-

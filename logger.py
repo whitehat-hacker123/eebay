@@ -115,15 +115,21 @@ class Logger:
         Returns:
             요약 문자열
         """
+        total = stats.get('total', 1)
+        success = stats.get('success', 0)
+        failed = stats.get('failed', 0)
+        skipped = stats.get('skipped', 0)
+        
         summary = f"""
 {'='*60}
 출금 처리 요약
 {'='*60}
-총 계정 수: {stats.get('total', 0)}
-성공: {stats.get('success', 0)}
-실패: {stats.get('failed', 0)}
+총 계정 수: {total}
+성공: {success}
+실패: {failed}
+스킵: {skipped}
 총 출금 금액: {stats.get('total_withdrawn', 0.0):.2f}
-성공률: {(stats.get('success', 0) / stats.get('total', 1) * 100):.2f}%
+성공률: {(success / total * 100) if total > 0 else 0:.2f}%
 {'='*60}
 """
         return summary

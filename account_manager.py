@@ -203,10 +203,20 @@ class AccountManager:
             content = f.read().strip()
         
         # 배열로 감싸지 않은 경우 배열로 감싸기
+        # 하지만 이미 배열인 경우는 그대로 사용
         if not content.startswith('['):
-            content = '[' + content + ']'
+            # 여러 JSON 객체가 쉼표로 구분된 경우 처리
+            if '{' in content:
+                content = '[' + content + ']'
+            else:
+                content = '[' + content + ']'
         
-        data = json.loads(content)
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            print(f"JSON 파싱 오류: {e}")
+            print("파일이 올바른 JSON 형식인지 확인하세요.")
+            return []
         
         accounts = []
         

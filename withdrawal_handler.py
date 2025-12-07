@@ -1,21 +1,24 @@
 """
 출금 처리 모듈
-로그인 후 계정 잔액을 확인하고 출금을 처리합니다.
+로그인 후 계정 잔액을 확인하고 조건에 따라 출금을 처리합니다.
 """
 import time
 import re
-from playwright.sync_api import Page
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from typing import Optional, Dict
-from browser_automation import BrowserAutomation
 
 
 class WithdrawalHandler:
-    def __init__(self, page: Page):
+    def __init__(self, driver):
         """
         Args:
-            page: Playwright Page 객체
+            driver: undetected-chromedriver WebDriver 객체
         """
-        self.page = page
+        self.driver = driver
+        self.wait = WebDriverWait(driver, 30)
     
     def check_balance(self) -> Optional[float]:
         """
@@ -33,35 +36,55 @@ class WithdrawalHandler:
                 '[data-balance]',
                 '.balance-amount',
                 '.user-balance',
-                'span:has-text("Balance")',
-                'div:has-text("Balance")'
+                '.total-balance',
+                '.available-balance'
             ]
             
             for selector in balance_selectors:
                 try:
-                    element = self.page.wait_for_selector(selector, timeout=3000)
+                    element = self.wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
                     if element:
-                        balance_text = element.inner_text()
+                        balance_text = element.text
                         balance = self._parse_balance(balance_text)
-                        if balance is not None:
+                        if balance is not None and balance > 0:
                             print(f"잔액 확인: {balance}")
                             return balance
-                except:
+                except TimeoutException:
                     continue
             
+            # XPath로 "Balance" 텍스트 포함 요소 찾기
+            try:
+                balance_elements = self.driver.find_elements(
+                    By.XPATH, 
+                    "//*[contains(text(), 'Balance') or contains(text(), 'balance') or contains(text(), '잔액')]"
+                )
+                for elem in balance_elements:
+                    parent = elem.find_element(By.XPATH, '..')
+                    balance_text = parent.text
+                    balance = self._parse_balance(balance_text)
+                    if balance is not None and balance > 0:
+                        print(f"잔액 확인 (XPath): {balance}")
+                        return balance
+            except:
+                pass
+            
             # 페이지 소스에서 직접 찾기
-            page_content = self.page.content()
+            page_source = self.driver.page_source
             balance_patterns = [
                 r'balance["\']?\s*[:=]\s*["\']?([\d,]+\.?\d*)',
                 r'잔액["\']?\s*[:=]\s*["\']?([\d,]+\.?\d*)',
-                r'Balance["\']?\s*[:=]\s*["\']?([\d,]+\.?\d*)'
+                r'Balance["\']?\s*[:=]\s*["\']?([\d,]+\.?\d*)',
+                r'"balance":\s*([\d,]+\.?\d*)',
+                r'data-balance=["\']?([\d,]+\.?\d*)'
             ]
             
             for pattern in balance_patterns:
-                match = re.search(pattern, page_content, re.IGNORECASE)
+                match = re.search(pattern, page_source, re.IGNORECASE)
                 if match:
                     balance = self._parse_balance(match.group(1))
-                    if balance is not None:
+                    if balance is not None and balance > 0:
                         print(f"잔액 확인 (패턴 매칭): {balance}")
                         return balance
             
@@ -78,9 +101,42 @@ class WithdrawalHandler:
             # 숫자와 소수점만 추출
             cleaned = re.sub(r'[^\d.,]', '', text)
             cleaned = cleaned.replace(',', '')
-            return float(cleaned)
+            if cleaned:
+                return float(cleaned)
+            return None
         except:
             return None
+    
+    def should_withdraw(self, balance: float, config: Dict) -> bool:
+        """
+        출금 조건을 확인합니다.
+        
+        Args:
+            balance: 현재 잔액
+            config: 설정 딕셔너리
+        
+        Returns:
+            출금해야 하면 True
+        """
+        # 최소 출금 금액 확인
+        min_withdrawal_amount = config.get('min_withdrawal_amount', 0)
+        if balance < min_withdrawal_amount:
+            print(f"잔액({balance})이 최소 출금 금액({min_withdrawal_amount})보다 작습니다.")
+            return False
+        
+        # 최소 잔액 필터링 (이 금액 이상일 때만 출금)
+        min_balance_filter = config.get('min_balance_filter', 0)
+        if min_balance_filter > 0 and balance < min_balance_filter:
+            print(f"잔액({balance})이 최소 필터 금액({min_balance_filter})보다 작습니다. 스킵합니다.")
+            return False
+        
+        # 최대 잔액 필터링 (이 금액 이하일 때만 출금)
+        max_balance_filter = config.get('max_balance_filter', float('inf'))
+        if balance > max_balance_filter:
+            print(f"잔액({balance})이 최대 필터 금액({max_balance_filter})보다 큽니다. 스킵합니다.")
+            return False
+        
+        return True
     
     def navigate_to_withdrawal(self) -> bool:
         """
@@ -90,7 +146,26 @@ class WithdrawalHandler:
             이동 성공 여부
         """
         try:
-            # 출금 페이지로 이동하는 여러 방법 시도
+            # 먼저 메뉴에서 출금 링크 찾기
+            withdrawal_link_selectors = [
+                (By.CSS_SELECTOR, 'a[href*="withdraw" i]'),
+                (By.XPATH, '//a[contains(text(), "Withdraw") or contains(text(), "출금")]'),
+                (By.XPATH, '//button[contains(text(), "Withdraw") or contains(text(), "출금")]')
+            ]
+            
+            for by, selector in withdrawal_link_selectors:
+                try:
+                    link = self.wait.until(EC.element_to_be_clickable((by, selector)))
+                    if link:
+                        link.click()
+                        time.sleep(3)
+                        if self._is_withdrawal_page():
+                            print("출금 페이지로 이동 완료")
+                            return True
+                except TimeoutException:
+                    continue
+            
+            # 직접 URL로 이동
             withdrawal_urls = [
                 "https://rollbet.gg/withdraw",
                 "https://rollbet.gg/withdrawal",
@@ -98,32 +173,10 @@ class WithdrawalHandler:
                 "https://rollbet.gg/account/withdraw"
             ]
             
-            # 먼저 메뉴에서 출금 링크 찾기
-            withdrawal_link_selectors = [
-                'a[href*="withdraw" i]',
-                'a:has-text("Withdraw")',
-                'a:has-text("출금")',
-                'button:has-text("Withdraw")',
-                'button:has-text("출금")'
-            ]
-            
-            for selector in withdrawal_link_selectors:
-                try:
-                    link = self.page.wait_for_selector(selector, timeout=3000)
-                    if link:
-                        link.click()
-                        time.sleep(2)
-                        if self._is_withdrawal_page():
-                            print("출금 페이지로 이동 완료")
-                            return True
-                except:
-                    continue
-            
-            # 직접 URL로 이동
             for url in withdrawal_urls:
                 try:
-                    self.page.goto(url, wait_until="networkidle", timeout=15000)
-                    time.sleep(2)
+                    self.driver.get(url)
+                    time.sleep(3)
                     if self._is_withdrawal_page():
                         print(f"출금 페이지로 이동 완료: {url}")
                         return True
@@ -140,38 +193,43 @@ class WithdrawalHandler:
     def _is_withdrawal_page(self) -> bool:
         """현재 페이지가 출금 페이지인지 확인합니다."""
         try:
-            current_url = self.page.url.lower()
+            current_url = self.driver.current_url.lower()
             if "withdraw" in current_url:
                 return True
             
             # 출금 관련 요소 확인
             withdrawal_indicators = [
-                'input[name*="amount" i]',
-                'input[placeholder*="amount" i]',
-                'input[name*="wallet" i]',
-                'button:has-text("Withdraw")',
-                'button:has-text("출금")'
+                (By.CSS_SELECTOR, 'input[name*="amount" i]'),
+                (By.CSS_SELECTOR, 'input[placeholder*="amount" i]'),
+                (By.CSS_SELECTOR, 'input[name*="wallet" i]'),
+                (By.XPATH, '//button[contains(text(), "Withdraw") or contains(text(), "출금")]')
             ]
             
-            for selector in withdrawal_indicators:
+            for by, selector in withdrawal_indicators:
                 try:
-                    element = self.page.wait_for_selector(selector, timeout=2000)
+                    element = self.driver.find_element(by, selector)
                     if element:
                         return True
-                except:
+                except NoSuchElementException:
                     continue
             
             return False
         except:
             return False
     
-    def process_withdrawal(self, destination_wallet: str, amount: Optional[float] = None) -> Dict[str, any]:
+    def process_withdrawal(
+        self, 
+        destination_wallet: str, 
+        amount: Optional[float] = None,
+        config: Optional[Dict] = None
+    ) -> Dict[str, any]:
         """
         출금을 처리합니다.
         
         Args:
             destination_wallet: 목적 지갑 주소
             amount: 출금 금액 (None이면 전체 잔액)
+            config: 설정 딕셔너리
         
         Returns:
             {"success": bool, "amount": float, "message": str}
@@ -182,6 +240,8 @@ class WithdrawalHandler:
             "message": ""
         }
         
+        config = config or {}
+        
         try:
             # 잔액 확인
             balance = self.check_balance()
@@ -189,8 +249,20 @@ class WithdrawalHandler:
                 result["message"] = "출금 가능한 잔액이 없습니다."
                 return result
             
+            # 출금 조건 확인
+            if not self.should_withdraw(balance, config):
+                result["message"] = "출금 조건을 만족하지 않습니다."
+                result["success"] = True  # 조건 불만족은 성공으로 간주 (스킵)
+                return result
+            
             # 출금 금액 결정
             withdrawal_amount = amount if amount else balance
+            
+            # 최소 출금 금액 확인
+            min_withdrawal = config.get('min_withdrawal_amount', 0)
+            if withdrawal_amount < min_withdrawal:
+                result["message"] = f"출금 금액({withdrawal_amount})이 최소 출금 금액({min_withdrawal})보다 작습니다."
+                return result
             
             if withdrawal_amount > balance:
                 result["message"] = f"출금 금액({withdrawal_amount})이 잔액({balance})보다 큽니다."
@@ -201,22 +273,20 @@ class WithdrawalHandler:
                 result["message"] = "출금 페이지로 이동할 수 없습니다."
                 return result
             
-            time.sleep(2)
+            time.sleep(3)
             
             # 지갑 주소 입력
             wallet_input_selectors = [
-                'input[name*="wallet" i]',
-                'input[name*="address" i]',
-                'input[placeholder*="wallet" i]',
-                'input[placeholder*="address" i]',
-                'input[type="text"]'
+                (By.CSS_SELECTOR, 'input[name*="wallet" i]'),
+                (By.CSS_SELECTOR, 'input[name*="address" i]'),
+                (By.CSS_SELECTOR, 'input[placeholder*="wallet" i]'),
+                (By.CSS_SELECTOR, 'input[placeholder*="address" i]')
             ]
             
             wallet_input = None
-            for selector in wallet_input_selectors:
+            for by, selector in wallet_input_selectors:
                 try:
-                    # 여러 입력 필드 중에서 지갑 주소 필드 찾기
-                    inputs = self.page.query_selector_all(selector)
+                    inputs = self.driver.find_elements(by, selector)
                     for inp in inputs:
                         placeholder = inp.get_attribute('placeholder') or ''
                         name = inp.get_attribute('name') or ''
@@ -230,23 +300,24 @@ class WithdrawalHandler:
                     continue
             
             if wallet_input:
-                wallet_input.fill(destination_wallet)
-                time.sleep(0.5)
+                wallet_input.clear()
+                wallet_input.send_keys(destination_wallet)
+                time.sleep(1)
                 print(f"지갑 주소 입력 완료: {destination_wallet[:20]}...")
             else:
                 print("지갑 주소 입력 필드를 찾을 수 없습니다. 수동 확인이 필요할 수 있습니다.")
             
             # 출금 금액 입력
             amount_input_selectors = [
-                'input[name*="amount" i]',
-                'input[placeholder*="amount" i]',
-                'input[type="number"]'
+                (By.CSS_SELECTOR, 'input[name*="amount" i]'),
+                (By.CSS_SELECTOR, 'input[placeholder*="amount" i]'),
+                (By.CSS_SELECTOR, 'input[type="number"]')
             ]
             
             amount_input = None
-            for selector in amount_input_selectors:
+            for by, selector in amount_input_selectors:
                 try:
-                    inputs = self.page.query_selector_all(selector)
+                    inputs = self.driver.find_elements(by, selector)
                     for inp in inputs:
                         placeholder = inp.get_attribute('placeholder') or ''
                         name = inp.get_attribute('name') or ''
@@ -259,36 +330,35 @@ class WithdrawalHandler:
                     continue
             
             if amount_input:
-                amount_input.fill(str(withdrawal_amount))
-                time.sleep(0.5)
+                amount_input.clear()
+                amount_input.send_keys(str(withdrawal_amount))
+                time.sleep(1)
                 print(f"출금 금액 입력 완료: {withdrawal_amount}")
             else:
                 print("출금 금액 입력 필드를 찾을 수 없습니다.")
             
             # 출금 버튼 클릭
             withdraw_button_selectors = [
-                'button[type="submit"]',
-                'button:has-text("Withdraw")',
-                'button:has-text("출금")',
-                'button:has-text("Confirm")',
-                'button:has-text("확인")',
-                'button.btn-primary',
-                'button.withdraw-button'
+                (By.CSS_SELECTOR, 'button[type="submit"]'),
+                (By.XPATH, '//button[contains(text(), "Withdraw") or contains(text(), "출금")]'),
+                (By.XPATH, '//button[contains(text(), "Confirm") or contains(text(), "확인")]'),
+                (By.CSS_SELECTOR, 'button.btn-primary'),
+                (By.CSS_SELECTOR, 'button.withdraw-button')
             ]
             
             withdraw_button = None
-            for selector in withdraw_button_selectors:
+            for by, selector in withdraw_button_selectors:
                 try:
-                    button = self.page.wait_for_selector(selector, timeout=3000)
-                    if button and button.is_visible():
+                    button = self.wait.until(EC.element_to_be_clickable((by, selector)))
+                    if button and button.is_displayed():
                         withdraw_button = button
                         break
-                except:
+                except TimeoutException:
                     continue
             
             if withdraw_button:
                 withdraw_button.click()
-                time.sleep(3)  # 출금 처리 대기
+                time.sleep(5)  # 출금 처리 대기
                 print("출금 버튼 클릭 완료")
             else:
                 print("출금 버튼을 찾을 수 없습니다.")
@@ -297,43 +367,43 @@ class WithdrawalHandler:
             
             # 출금 성공 확인
             success_indicators = [
-                'text=출금 요청이 완료되었습니다',
-                'text=Withdrawal request submitted',
-                'text=Success',
-                'text=성공',
-                '.success-message',
-                '.alert-success'
+                (By.XPATH, '//*[contains(text(), "출금 요청이 완료되었습니다")]'),
+                (By.XPATH, '//*[contains(text(), "Withdrawal request submitted")]'),
+                (By.XPATH, '//*[contains(text(), "Success")]'),
+                (By.XPATH, '//*[contains(text(), "성공")]'),
+                (By.CSS_SELECTOR, '.success-message'),
+                (By.CSS_SELECTOR, '.alert-success')
             ]
             
-            for indicator in success_indicators:
+            for by, selector in success_indicators:
                 try:
-                    element = self.page.wait_for_selector(indicator, timeout=5000)
+                    element = self.wait.until(EC.presence_of_element_located((by, selector)))
                     if element:
                         result["success"] = True
                         result["amount"] = withdrawal_amount
                         result["message"] = "출금 요청이 성공적으로 제출되었습니다."
                         print(f"출금 성공: {withdrawal_amount}")
                         return result
-                except:
+                except TimeoutException:
                     continue
             
             # 에러 메시지 확인
             error_indicators = [
-                '.error-message',
-                '.alert-danger',
-                'text=Error',
-                'text=오류'
+                (By.CSS_SELECTOR, '.error-message'),
+                (By.CSS_SELECTOR, '.alert-danger'),
+                (By.XPATH, '//*[contains(text(), "Error")]'),
+                (By.XPATH, '//*[contains(text(), "오류")]')
             ]
             
-            for indicator in error_indicators:
+            for by, selector in error_indicators:
                 try:
-                    element = self.page.wait_for_selector(indicator, timeout=2000)
+                    element = self.driver.find_element(by, selector)
                     if element:
-                        error_text = element.inner_text()
+                        error_text = element.text
                         result["message"] = f"출금 실패: {error_text}"
                         print(f"출금 실패: {error_text}")
                         return result
-                except:
+                except NoSuchElementException:
                     continue
             
             # 명확한 성공/실패 메시지가 없는 경우
@@ -346,5 +416,6 @@ class WithdrawalHandler:
         except Exception as e:
             result["message"] = f"출금 처리 중 오류: {e}"
             print(f"출금 처리 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
             return result
-
